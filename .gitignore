@@ -1,4 +1,6 @@
 venv/
+data/
+dataset_temp/
 __pycache__/
 *.pyc
 
