@@ -66,9 +66,20 @@ def render_probability_bars(top_predictions: list[dict]) -> None:
         st.progress(min(max(probability, 0.0), 1.0))
 
 
+def render_all_probability_bars(probabilities: list[float]) -> None:
+    rows = sorted(
+        zip(CLASS_NAMES, probabilities),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for class_name, probability in rows:
+        st.write(f"**{class_name.title()}** {percent(float(probability))}")
+        st.progress(min(max(float(probability), 0.0), 1.0))
+
+
 def dashboard_page() -> None:
-    st.title("AI Waste Classification V3")
-    st.caption("Operational dashboard based only on locally recorded predictions.")
+    st.title("AI Waste Classification Dashboard")
+    st.caption("Intelligent waste recognition and responsible disposal guidance.")
     history = load_history()
 
     if history.empty:
@@ -83,11 +94,12 @@ def dashboard_page() -> None:
     latest = history.iloc[0]
 
     cols = st.columns(5)
-    cols[0].metric("Total analyses", total)
-    cols[1].metric("Average confidence", percent(avg_confidence))
-    cols[2].metric("High confidence", high_count)
-    cols[3].metric("Uncertain", uncertain_count)
-    cols[4].metric("Top category", most_common.title())
+    low_count = int((history["confidence_level"] == "Low").sum())
+    cols[0].metric("Total Predictions", total)
+    cols[1].metric("Average Confidence", percent(avg_confidence))
+    cols[2].metric("High Confidence", high_count)
+    cols[3].metric("Low Confidence", low_count)
+    cols[4].metric("Most Common Waste Type", most_common.title())
 
     st.markdown(f"Latest prediction: **{latest['predicted_class'].title()}** at {latest['timestamp']}")
 
@@ -109,7 +121,7 @@ def dashboard_page() -> None:
 
 
 def classify_page() -> None:
-    st.title("Classify Waste")
+    st.title("Analyze Waste")
     if not TFLITE_MODEL_PATH.exists():
         st.error(f"Deployment model is missing: {TFLITE_MODEL_PATH}")
         return
@@ -142,9 +154,10 @@ def classify_page() -> None:
                 st.error(f"Unable to analyze this image: {error}")
                 return
 
-        st.metric("Prediction", result.predicted_class.title())
+        status_icon = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}[result.confidence_level]
+        st.metric("Prediction", result.predicted_class.upper())
         st.metric("Confidence", percent(result.confidence))
-        st.metric("Confidence level", result.confidence_level)
+        st.metric("Confidence status", f"{status_icon} {result.confidence_level} confidence")
 
         if result.quality_warnings:
             for warning in result.quality_warnings:
@@ -152,17 +165,26 @@ def classify_page() -> None:
 
         if result.uncertainty:
             st.warning(result.uncertainty)
-            st.info(
+            st.warning(
                 "This model is designed to classify one dominant waste category. "
                 "Images containing multiple waste objects may produce uncertain results."
             )
         elif result.confidence_level == "High":
             st.success("High-confidence prediction.")
         else:
-            st.warning("Medium-confidence prediction. Review the top alternatives before disposal.")
+            st.warning("Moderate confidence: image may contain mixed or unclear materials.")
 
-        st.subheader("Top Predictions")
+        st.subheader("Probability Chart")
+        render_all_probability_bars(result.probabilities)
+
+        st.subheader("Top 3 Predictions")
         render_probability_bars(result.top_3_predictions)
+
+        st.subheader("Why this result?")
+        st.write(
+            "The production model selected the class with the highest output probability. "
+            "Review the alternatives when confidence is medium, low, or marked uncertain."
+        )
 
         st.subheader("Recommendation")
         st.info(result.recommendation)
@@ -200,9 +222,15 @@ def analytics_page() -> None:
 
 
 def model_performance_page() -> None:
-    st.title("Model Performance")
+    st.title("Model Insights")
     validation_report = read_json_report(REPORTS_DIR / "classification_report.json")
     real_report = read_json_report(REPORTS_DIR / "real_world_classification_report.json")
+
+    st.write("Model name: `waste_classifier_v3.tflite`")
+    st.write("Model type: MobileNetV2 transfer-learning classifier converted to TensorFlow Lite")
+    st.write("Input size: `224 x 224 x 3`")
+    st.write(f"Number of classes: `{len(CLASS_NAMES)}`")
+    st.write("Class names: " + ", ".join(name.title() for name in CLASS_NAMES))
 
     if validation_report is None:
         st.info("Validation evaluation has not been performed yet.")
@@ -269,7 +297,7 @@ def history_page() -> None:
 
 
 def waste_guide_page() -> None:
-    st.title("Waste Guide")
+    st.title("Recycling Guide")
     st.caption("General guidance only. Recycling rules vary by location.")
     for class_name in CLASS_NAMES:
         guide = WASTE_GUIDE[class_name]
@@ -306,7 +334,17 @@ PAGES = {
 
 with st.sidebar:
     st.header("Navigation")
-    page_name = st.radio("Page", list(PAGES.keys()), label_visibility="collapsed")
+    labels = {
+        "Dashboard": "🏠 Dashboard",
+        "Classify Waste": "🔍 Analyze Waste",
+        "Analytics": "📊 Analytics",
+        "Model Performance": "🧠 Model Insights",
+        "Prediction History": "📜 Prediction History",
+        "Waste Guide": "♻️ Recycling Guide",
+        "About": "ℹ️ About",
+    }
+    selected = st.radio("Page", list(labels.values()), label_visibility="collapsed")
+    page_name = next(key for key, value in labels.items() if value == selected)
     st.divider()
     st.caption("Model classes")
     st.write(", ".join(name.title() for name in CLASS_NAMES))

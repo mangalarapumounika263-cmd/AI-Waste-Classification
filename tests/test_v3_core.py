@@ -32,8 +32,8 @@ class V3CoreTests(unittest.TestCase):
 
     def test_confidence_levels(self):
         self.assertEqual(confidence_level(0.81), "High")
-        self.assertEqual(confidence_level(0.60), "Medium")
-        self.assertEqual(confidence_level(0.59), "Low")
+        self.assertEqual(confidence_level(0.50), "Medium")
+        self.assertEqual(confidence_level(0.49), "Low")
 
     def test_uncertainty_when_top_two_are_close(self):
         probabilities = np.array([0.52, 0.44, 0.01, 0.01, 0.01, 0.01], dtype=np.float32)

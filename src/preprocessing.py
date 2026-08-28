@@ -54,9 +54,10 @@ def check_image_quality(image: Image.Image) -> ImageQuality:
     )
 
 
-def preprocess_for_mobilenet_v2(image: Image.Image) -> np.ndarray:
+def preprocess_for_mobilenet_v2(image: Image.Image, model_includes_preprocessing: bool = False) -> np.ndarray:
     rgb_image = ensure_rgb_image(image)
     resized = rgb_image.resize(IMAGE_SIZE)
     image_array = np.asarray(resized, dtype=np.float32)
-    image_array = (image_array / 127.5) - 1.0
+    if not model_includes_preprocessing:
+        image_array = (image_array / 127.5) - 1.0
     return np.expand_dims(image_array, axis=0)

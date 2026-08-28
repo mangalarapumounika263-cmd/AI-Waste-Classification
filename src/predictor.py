@@ -18,7 +18,9 @@ from .config import (
     CLASS_NAMES,
     CLASS_NAMES_PATH,
     HIGH_CONFIDENCE_THRESHOLD,
+    HIGH_ENTROPY_THRESHOLD,
     MEDIUM_CONFIDENCE_THRESHOLD,
+    MODEL_INCLUDES_PREPROCESSING,
     TFLITE_MODEL_PATH,
     UNCERTAIN_MARGIN_THRESHOLD,
 )
@@ -76,11 +78,14 @@ def uncertainty_reason(class_names: List[str], probabilities: np.ndarray) -> Opt
     order = np.argsort(probabilities)[::-1]
     top = float(probabilities[order[0]])
     second = float(probabilities[order[1]])
+    entropy = float(-np.sum(probabilities * np.log(np.clip(probabilities, 1e-8, 1.0))))
     if top - second < UNCERTAIN_MARGIN_THRESHOLD:
         return (
             f"Uncertain: {class_names[order[0]].title()} and "
             f"{class_names[order[1]].title()} are visually similar in this image."
         )
+    if entropy >= HIGH_ENTROPY_THRESHOLD and top < HIGH_CONFIDENCE_THRESHOLD:
+        return "This image may contain mixed or unclear materials. The model is identifying the dominant material."
     if top < MEDIUM_CONFIDENCE_THRESHOLD:
         return "Low-confidence prediction. Try a clearer image with one dominant waste item."
     return None
@@ -113,7 +118,10 @@ class WastePredictor:
             self.load()
 
         quality = check_image_quality(image)
-        input_data = preprocess_for_mobilenet_v2(image)
+        input_data = preprocess_for_mobilenet_v2(
+            image,
+            model_includes_preprocessing=MODEL_INCLUDES_PREPROCESSING,
+        )
         input_dtype = self.input_details[0]["dtype"]
         if input_dtype != np.float32:
             input_data = input_data.astype(input_dtype)
