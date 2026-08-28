@@ -2,6 +2,7 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import json
+import os
 from PIL import Image
 from datetime import datetime
 
@@ -20,7 +21,7 @@ st.set_page_config(
 # CONFIGURATION
 # ============================================================
 
-MODEL_PATH = "models/waste_classifier_mobilenet.tflite"
+MODEL_PATH = "models/waste_classifier.tflite"
 CLASS_PATH = "models/class_names.json"
 
 # ============================================================
@@ -35,59 +36,50 @@ WASTE_INFO = {
         "disposal": "Flatten cardboard boxes and place them in the paper/cardboard recycling collection.",
         "tips": "Keep cardboard clean and dry. Remove excessive tape, plastic, and food contamination."
     },
-
     "glass": {
         "icon": "🍾",
         "title": "Glass",
         "type": "Recyclable",
         "disposal": "Place glass containers in the designated glass recycling collection.",
-        "tips": "Rinse containers and handle broken glass carefully."
+        "tips": "Rinse containers and handle broken glass carefully. Follow local recycling rules."
     },
-
     "metal": {
         "icon": "🥫",
         "title": "Metal",
         "type": "Recyclable",
         "disposal": "Place clean metal cans and containers in the appropriate recycling collection.",
-        "tips": "Empty and rinse cans before recycling."
+        "tips": "Empty and rinse cans before recycling whenever possible."
     },
-
     "paper": {
         "icon": "📄",
         "title": "Paper",
         "type": "Recyclable",
-        "disposal": "Place clean and dry paper in paper recycling.",
+        "disposal": "Place clean and dry paper in the paper recycling collection.",
         "tips": "Avoid mixing heavily contaminated or wet paper with recyclable paper."
     },
-
     "plastic": {
         "icon": "🧴",
         "title": "Plastic",
         "type": "Usually Recyclable",
-        "disposal": "Check local recycling rules and place accepted plastic containers in recycling.",
-        "tips": "Empty and rinse containers before recycling."
+        "disposal": "Check your local recycling rules and place accepted plastic containers in the recycling collection.",
+        "tips": "Empty and rinse containers. Different areas accept different plastic types."
     },
-
     "trash": {
         "icon": "🗑️",
         "title": "Trash",
         "type": "General Waste",
         "disposal": "Place non-recyclable waste in the appropriate general waste collection.",
-        "tips": "Check whether the item can be reused, composted, or recycled before disposal."
+        "tips": "Before disposing, check whether the item can be reused, repaired, composted, or recycled."
     }
 }
 
 # ============================================================
-# LOAD TFLITE MODEL
+# LOAD MODEL
 # ============================================================
 
 @st.cache_resource
 def load_model():
-
-    interpreter = tf.lite.Interpreter(
-        model_path=MODEL_PATH
-    )
-
+    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
     interpreter.allocate_tensors()
 
     input_details = interpreter.get_input_details()
@@ -98,48 +90,24 @@ def load_model():
 
 @st.cache_data
 def load_classes():
-
     with open(CLASS_PATH, "r") as file:
         return json.load(file)
 
 
 # ============================================================
-# PREDICTION
+# PREDICTION FUNCTION
 # ============================================================
 
-def predict_image(
-    image,
-    interpreter,
-    input_details,
-    output_details,
-    class_names
-):
+def predict_image(image, interpreter, input_details, output_details, class_names):
 
-    # Convert image to RGB
     image = image.convert("RGB")
-
-    # Resize to model input
     image = image.resize((224, 224))
 
-    # Convert to float32
-    image_array = np.array(
-        image,
-        dtype=np.float32
-    )
+    image_array = np.array(image, dtype=np.float32)
 
-    # Add batch dimension
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
+    image_array = np.expand_dims(image_array, axis=0)
 
-    interpreter.set_tensor(
-        input_details[0]["index"],
-        image_array
-    )
-
-    interpreter.invoke()
-
+    # Model contains Rescaling layer, so keep pixel values 0-255.
     interpreter.set_tensor(
         input_details[0]["index"],
         image_array
@@ -151,23 +119,13 @@ def predict_image(
         output_details[0]["index"]
     )[0]
 
-    predicted_index = int(
-        np.argmax(predictions)
-    )
+    predicted_index = int(np.argmax(predictions))
 
-    predicted_class = class_names[
-        predicted_index
-    ]
+    predicted_class = class_names[predicted_index]
 
-    confidence = float(
-        predictions[predicted_index]
-    )
+    confidence = float(predictions[predicted_index])
 
-    return (
-        predicted_class,
-        confidence,
-        predictions
-    )
+    return predicted_class, confidence, predictions
 
 
 # ============================================================
@@ -176,27 +134,6 @@ def predict_image(
 
 if "history" not in st.session_state:
     st.session_state.history = []
-
-
-# ============================================================
-# LOAD MODEL
-# ============================================================
-
-try:
-
-    interpreter, input_details, output_details = load_model()
-
-    class_names = load_classes()
-
-except Exception as e:
-
-    st.error(
-        "Unable to load the AI model."
-    )
-
-    st.code(str(e))
-
-    st.stop()
 
 
 # ============================================================
@@ -222,13 +159,25 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.caption(
-        "AI Waste Classification System"
-    )
+    st.caption("AI Waste Classification System")
+    st.caption("6-Class Image Classification")
 
-    st.caption(
-        "Powered by MobileNetV2"
-    )
+
+# ============================================================
+# LOAD MODEL
+# ============================================================
+
+try:
+    interpreter, input_details, output_details = load_model()
+    class_names = load_classes()
+
+except Exception as e:
+
+    st.error("Unable to load the AI model.")
+
+    st.code(str(e))
+
+    st.stop()
 
 
 # ============================================================
@@ -237,23 +186,23 @@ with st.sidebar:
 
 if page == "🏠 Dashboard":
 
-    st.title(
-        "♻️ AI-Based Waste Classification"
-    )
+    st.title("♻️ AI-Based Waste Classification")
 
     st.subheader(
         "Intelligent waste identification and disposal assistance"
     )
 
-    st.write(
+    st.markdown(
         """
-        Upload an image of waste and our AI model will identify
-        its category, confidence level, and provide disposal
-        recommendations.
+        Upload an image of waste and let the AI model identify
+        its category. The system provides the predicted category,
+        confidence score, waste information, and disposal guidance.
         """
     )
 
     st.markdown("---")
+
+    # Metrics
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -271,45 +220,44 @@ if page == "🏠 Dashboard":
 
     with col3:
         st.metric(
-            "Model Accuracy",
-            "87.99%"
+            "Model Input",
+            "224 × 224"
         )
 
     with col4:
         st.metric(
-            "Model",
-            "MobileNetV2"
+            "Model Type",
+            "CNN"
         )
 
     st.markdown("---")
 
-    st.subheader(
-        "Supported Waste Categories"
-    )
+    st.subheader("Supported Waste Categories")
 
     cols = st.columns(6)
 
-    for index, class_name in enumerate(
-        class_names
-    ):
+    for index, class_name in enumerate(class_names):
 
-        info = WASTE_INFO[class_name]
+        info = WASTE_INFO.get(
+            class_name,
+            {
+                "icon": "♻️",
+                "title": class_name.title()
+            }
+        )
 
         with cols[index]:
-
             st.markdown(
                 f"""
                 <div style="
                     border:1px solid #ddd;
-                    border-radius:12px;
+                    border-radius:10px;
                     padding:15px;
                     text-align:center;
-                    min-height:130px;
+                    min-height:120px;
                 ">
                     <h2>{info['icon']}</h2>
                     <b>{info['title']}</b>
-                    <br>
-                    <small>{info['type']}</small>
                 </div>
                 """,
                 unsafe_allow_html=True
@@ -318,26 +266,24 @@ if page == "🏠 Dashboard":
     st.markdown("---")
 
     st.info(
-        "Select 'Classify Waste' from the sidebar to analyze an image."
+        "Go to 'Classify Waste' from the sidebar to analyze an image."
     )
 
 
 # ============================================================
-# CLASSIFY WASTE
+# CLASSIFICATION PAGE
 # ============================================================
 
 elif page == "📷 Classify Waste":
 
-    st.title(
-        "📷 Classify Waste"
-    )
+    st.title("📷 Classify Waste")
 
     st.write(
-        "Upload a waste image for AI-powered classification."
+        "Upload a waste image and the AI model will classify it."
     )
 
     uploaded_file = st.file_uploader(
-        "Choose an image",
+        "Choose a waste image",
         type=[
             "jpg",
             "jpeg",
@@ -346,21 +292,15 @@ elif page == "📷 Classify Waste":
         ]
     )
 
-    if uploaded_file:
+    if uploaded_file is not None:
 
-        image = Image.open(
-            uploaded_file
-        )
+        image = Image.open(uploaded_file)
 
-        col1, col2 = st.columns(
-            [1, 1]
-        )
+        col1, col2 = st.columns([1, 1])
 
         with col1:
 
-            st.subheader(
-                "Uploaded Image"
-            )
+            st.subheader("Uploaded Image")
 
             st.image(
                 image,
@@ -369,9 +309,7 @@ elif page == "📷 Classify Waste":
 
         with col2:
 
-            st.subheader(
-                "AI Analysis"
-            )
+            st.subheader("AI Analysis")
 
             analyze = st.button(
                 "🔍 Analyze Waste",
@@ -381,15 +319,9 @@ elif page == "📷 Classify Waste":
 
             if analyze:
 
-                with st.spinner(
-                    "AI is analyzing the image..."
-                ):
+                with st.spinner("Analyzing image..."):
 
-                    (
-                        predicted_class,
-                        confidence,
-                        predictions
-                    ) = predict_image(
+                    predicted_class, confidence, predictions = predict_image(
                         image,
                         interpreter,
                         input_details,
@@ -397,20 +329,27 @@ elif page == "📷 Classify Waste":
                         class_names
                     )
 
-                info = WASTE_INFO[
-                    predicted_class
-                ]
-
-                st.success(
-                    "Analysis completed!"
+                info = WASTE_INFO.get(
+                    predicted_class,
+                    {
+                        "icon": "♻️",
+                        "title": predicted_class.title(),
+                        "type": "Unknown",
+                        "disposal": "Follow local waste-management guidance.",
+                        "tips": "Check local recycling rules."
+                    }
                 )
 
+                st.success("Classification completed!")
+
                 st.markdown(
-                    f"# {info['icon']} {info['title']}"
+                    f"""
+                    ## {info['icon']} {info['title']}
+                    """
                 )
 
                 st.metric(
-                    "AI Confidence",
+                    "Confidence",
                     f"{confidence * 100:.2f}%"
                 )
 
@@ -418,118 +357,40 @@ elif page == "📷 Classify Waste":
                     confidence
                 )
 
-                # ==================================================
-                # UNCERTAINTY / MIXED WASTE DETECTION
-                # ==================================================
-
-                sorted_predictions = sorted(
-                    zip(
-                        class_names,
-                        predictions
-                    ),
-                    key=lambda x: x[1],
-                    reverse=True
+                st.markdown(
+                    f"**Waste Type:** {info['type']}"
                 )
-
-                second_class = (
-                    sorted_predictions[1][0]
-                )
-
-                second_confidence = float(
-                    sorted_predictions[1][1]
-                )
-
-                confidence_gap = (
-                    confidence -
-                    second_confidence
-                )
-
-                if confidence < 0.65:
-
-                    st.warning(
-                        "⚠️ The AI is not highly confident. "
-                        "The image may contain an unusual or mixed waste item."
-                    )
-
-                elif confidence_gap < 0.20:
-
-                    st.warning(
-                        f"⚠️ Possible mixed waste detected. "
-                        f"The model also sees "
-                        f"{second_class.title()} "
-                        f"({second_confidence * 100:.1f}%)."
-                    )
-
-                else:
-
-                    st.success(
-                        "✅ The AI has a clear classification."
-                    )
 
                 st.markdown("---")
 
-                st.subheader(
-                    "♻️ Disposal Recommendation"
-                )
+                st.subheader("♻️ Disposal Recommendation")
 
                 st.write(
                     info["disposal"]
                 )
 
-                st.subheader(
-                    "💡 Recycling Tip"
-                )
+                st.subheader("💡 Recycling Tip")
 
                 st.write(
                     info["tips"]
                 )
 
-                # ==================================================
-                # ALL PREDICTIONS
-                # ==================================================
+                # Probability chart
 
                 st.markdown("---")
 
-                st.subheader(
-                    "📊 AI Probability Distribution"
-                )
+                st.subheader("📊 Model Probabilities")
 
-                probability_data = {}
-
-                for i, class_name in enumerate(
-                    class_names
-                ):
-
-                    probability_data[
-                        class_name.title()
-                    ] = float(
-                        predictions[i]
-                    )
+                probability_data = {
+                    class_names[i]: float(predictions[i])
+                    for i in range(len(class_names))
+                }
 
                 st.bar_chart(
                     probability_data
                 )
 
-                # ==================================================
-                # TOP PREDICTIONS
-                # ==================================================
-
-                st.subheader(
-                    "Top Predictions"
-                )
-
-                for class_name, probability in (
-                    sorted_predictions
-                ):
-
-                    st.write(
-                        f"**{class_name.title()}** — "
-                        f"{probability * 100:.2f}%"
-                    )
-
-                # ==================================================
-                # HISTORY
-                # ==================================================
+                # History
 
                 st.session_state.history.append(
                     {
@@ -545,26 +406,25 @@ elif page == "📷 Classify Waste":
     else:
 
         st.info(
-            "Upload an image to begin classification."
+            "Upload a JPG, JPEG, PNG, or WEBP image to begin."
         )
 
 
 # ============================================================
-# ANALYTICS
+# ANALYTICS PAGE
 # ============================================================
 
 elif page == "📊 Analytics":
 
-    st.title(
-        "📊 Waste Classification Analytics"
-    )
+    st.title("📊 Waste Classification Analytics")
 
     history = st.session_state.history
 
     if not history:
 
         st.info(
-            "No predictions available yet."
+            "No predictions available yet. "
+            "Classify some images first."
         )
 
     else:
@@ -577,9 +437,10 @@ elif page == "📊 Analytics":
 
             category = item["prediction"]
 
-            counts[category] = (
-                counts.get(category, 0) + 1
-            )
+            counts[category] = counts.get(
+                category,
+                0
+            ) + 1
 
         average_confidence = (
             sum(
@@ -615,36 +476,45 @@ elif page == "📊 Analytics":
 
         st.markdown("---")
 
-        st.subheader(
-            "Category Distribution"
-        )
+        st.subheader("Category Distribution")
 
         chart_data = {
             category.title(): count
             for category, count in counts.items()
         }
 
-        st.bar_chart(
-            chart_data
-        )
+        st.bar_chart(chart_data)
+
+        st.markdown("---")
+
+        st.subheader("Prediction Details")
+
+        for category in class_names:
+
+            count = counts.get(
+                category,
+                0
+            )
+
+            st.write(
+                f"**{category.title()}**: {count}"
+            )
 
 
 # ============================================================
-# HISTORY
+# HISTORY PAGE
 # ============================================================
 
 elif page == "🕐 History":
 
-    st.title(
-        "🕐 Prediction History"
-    )
+    st.title("🕐 Prediction History")
 
     history = st.session_state.history
 
     if not history:
 
         st.info(
-            "No predictions yet."
+            "No classification history yet."
         )
 
     else:
@@ -653,22 +523,19 @@ elif page == "🕐 History":
 
             st.markdown(
                 f"""
-                ### {item['prediction'].title()}
+                **{item['prediction'].title()}**
 
                 🕐 {item['time']}
 
                 📁 {item['filename']}
 
-                🎯 Confidence:
-                {item['confidence'] * 100:.2f}%
+                🎯 Confidence: {item['confidence'] * 100:.2f}%
 
                 ---
                 """
             )
 
-        if st.button(
-            "🗑️ Clear History"
-        ):
+        if st.button("🗑️ Clear History"):
 
             st.session_state.history = []
 
@@ -676,56 +543,61 @@ elif page == "🕐 History":
 
 
 # ============================================================
-# ABOUT
+# ABOUT PAGE
 # ============================================================
 
 elif page == "ℹ️ About":
 
-    st.title(
-        "ℹ️ About the Project"
-    )
+    st.title("ℹ️ About the Project")
 
     st.markdown(
         """
         ## AI Waste Classification System
 
-        This application uses a MobileNetV2-based deep learning
-        model to classify waste images into six categories.
+        This application uses a convolutional neural network
+        trained to classify waste images into six categories:
 
-        ### Waste Categories
+        - 📦 Cardboard
+        - 🍾 Glass
+        - 🥫 Metal
+        - 📄 Paper
+        - 🧴 Plastic
+        - 🗑️ Trash
 
-        📦 Cardboard
+        ### Technology Stack
 
-        🍾 Glass
+        **Frontend:** Streamlit
 
-        🥫 Metal
+        **Machine Learning:** TensorFlow / TensorFlow Lite
 
-        📄 Paper
+        **Image Processing:** Pillow / NumPy
 
-        🧴 Plastic
+        **Model Input:** 224 × 224 RGB image
 
-        🗑️ Trash
+        ### Purpose
 
-        ### Technology
+        The system aims to assist users in identifying waste
+        categories and providing appropriate disposal and
+        recycling guidance.
 
-        - Streamlit
-        - TensorFlow
-        - TensorFlow Lite
-        - MobileNetV2
-        - NumPy
-        - Pillow
+        ### Note
 
-        ### Model Performance
-
-        Validation accuracy: **87.99%**
-
-        The model uses transfer learning with MobileNetV2
-        pretrained on ImageNet and fine-tuning for waste
-        classification.
-
-        ### Important
-
-        The AI prediction is an assistance tool. Actual waste
-        disposal should follow local waste-management rules.
+        Predictions are AI-based and should be treated as
+        assistance rather than a replacement for local
+        waste-management regulations.
         """
     )
+
+    st.markdown("---")
+
+    st.subheader("Model Classes")
+
+    for class_name in class_names:
+
+        info = WASTE_INFO.get(class_name)
+
+        if info:
+
+            st.write(
+                f"{info['icon']} **{info['title']}**"
+            )

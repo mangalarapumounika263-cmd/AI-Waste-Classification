@@ -4,6 +4,8 @@ dataset_temp/
 __pycache__/
 *.pyc
 
+models/waste_classifier.keras
+
 .env
 
 .ipynb_checkpoints/
