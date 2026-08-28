@@ -1,4 +1,4 @@
-# AI Waste Classification System V3
+# AI Waste Classification System 
 
 An AI-based waste classification application built around MobileNetV2, TensorFlow Lite, and Streamlit. The app classifies one dominant waste item into six categories: cardboard, glass, metal, paper, plastic, and trash.
 
