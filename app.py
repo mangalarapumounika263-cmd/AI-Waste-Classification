@@ -1,84 +1,37 @@
 import json
 from pathlib import Path
 
-import numpy as np
+import pandas as pd
 import streamlit as st
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
-try:
-    from ai_edge_litert.interpreter import Interpreter
-except ImportError:
-    from tensorflow.lite.python.interpreter import Interpreter
-
-
-# ============================================================
-# PAGE CONFIGURATION
-# ============================================================
+from src.analytics import clear_history, load_history, record_prediction
+from src.config import CLASS_NAMES, REPORTS_DIR, TFLITE_MODEL_PATH
+from src.predictor import WastePredictor
+from src.recommendations import WASTE_GUIDE
 
 st.set_page_config(
-    page_title="AI Waste Classification",
-    page_icon="♻️",
+    page_title="AI Waste Classification V3",
+    page_icon="Recycle",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-MODEL_PATH = BASE_DIR / "models" / "waste_classifier_mobilenet.tflite"
-CLASS_PATH = BASE_DIR / "models" / "class_names.json"
-
-IMG_SIZE = (224, 224)
-
-
-# ============================================================
-# CUSTOM CSS
-# ============================================================
-
 st.markdown(
     """
     <style>
-    .main-title {
-        font-size: 42px;
-        font-weight: 700;
-        text-align: center;
-        margin-bottom: 5px;
+    .block-container { padding-top: 1.6rem; }
+    div[data-testid="stMetric"] {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 14px 16px;
+        background: #ffffff;
     }
-
-    .subtitle {
-        text-align: center;
-        font-size: 18px;
-        color: #666;
-        margin-bottom: 30px;
-    }
-
-    .result-box {
-        padding: 20px;
-        border-radius: 15px;
-        border: 1px solid #ddd;
-        margin-top: 20px;
-    }
-
-    .prediction {
-        font-size: 32px;
-        font-weight: 700;
-        text-align: center;
-    }
-
-    .confidence {
-        font-size: 20px;
-        text-align: center;
-    }
-
-    .info-card {
-        padding: 15px;
-        border-radius: 12px;
-        border: 1px solid #ddd;
-        margin-bottom: 10px;
+    .status-note {
+        border-left: 4px solid #64748b;
+        padding: 0.7rem 0.9rem;
+        background: #f8fafc;
+        border-radius: 4px;
     }
     </style>
     """,
@@ -86,445 +39,276 @@ st.markdown(
 )
 
 
-# ============================================================
-# LOAD CLASS NAMES
-# ============================================================
-
-@st.cache_data
-def load_classes():
-    if not CLASS_PATH.exists():
-        raise FileNotFoundError(
-            f"Class file not found: {CLASS_PATH}"
-        )
-
-    with open(CLASS_PATH, "r", encoding="utf-8") as file:
-        return json.load(file)
-
-
-# ============================================================
-# LOAD TFLITE MODEL
-# ============================================================
-
 @st.cache_resource
-def load_model():
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(
-            f"Model not found: {MODEL_PATH}"
+def get_predictor() -> WastePredictor:
+    predictor = WastePredictor()
+    predictor.load()
+    return predictor
+
+
+def percent(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def read_json_report(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def render_probability_bars(top_predictions: list[dict]) -> None:
+    for item in top_predictions:
+        probability = float(item["probability"])
+        st.write(f"**{item['class_name'].title()}** {percent(probability)}")
+        st.progress(min(max(probability, 0.0), 1.0))
+
+
+def dashboard_page() -> None:
+    st.title("AI Waste Classification V3")
+    st.caption("Operational dashboard based only on locally recorded predictions.")
+    history = load_history()
+
+    if history.empty:
+        st.info("No predictions yet.")
+        return
+
+    total = len(history)
+    avg_confidence = float(history["confidence"].mean())
+    high_count = int((history["confidence_level"] == "High").sum())
+    uncertain_count = int(history["uncertainty"].fillna("").astype(bool).sum())
+    most_common = history["predicted_class"].mode().iloc[0]
+    latest = history.iloc[0]
+
+    cols = st.columns(5)
+    cols[0].metric("Total analyses", total)
+    cols[1].metric("Average confidence", percent(avg_confidence))
+    cols[2].metric("High confidence", high_count)
+    cols[3].metric("Uncertain", uncertain_count)
+    cols[4].metric("Top category", most_common.title())
+
+    st.markdown(f"Latest prediction: **{latest['predicted_class'].title()}** at {latest['timestamp']}")
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Category Distribution")
+        st.bar_chart(history["predicted_class"].value_counts())
+    with right:
+        st.subheader("Confidence Distribution")
+        st.bar_chart(history["confidence_level"].value_counts())
+
+    st.subheader("Recent History")
+    st.dataframe(
+        history[["timestamp", "filename", "predicted_class", "confidence", "confidence_level", "uncertainty"]]
+        .head(10),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def classify_page() -> None:
+    st.title("Classify Waste")
+    if not TFLITE_MODEL_PATH.exists():
+        st.error(f"Deployment model is missing: {TFLITE_MODEL_PATH}")
+        return
+
+    uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "webp"])
+    analyze = st.button("Analyze", type="primary", disabled=uploaded is None)
+
+    if uploaded is None:
+        st.info("Upload a waste image containing one dominant item.")
+        return
+
+    try:
+        image = Image.open(uploaded)
+    except (UnidentifiedImageError, OSError):
+        st.error("The uploaded file is not a valid image.")
+        return
+
+    left, right = st.columns([1, 1], gap="large")
+    with left:
+        st.image(image, caption=uploaded.name, use_container_width=True)
+
+    if not analyze:
+        return
+
+    with right:
+        with st.spinner("Analyzing image..."):
+            try:
+                result = get_predictor().predict(image)
+            except Exception as error:
+                st.error(f"Unable to analyze this image: {error}")
+                return
+
+        st.metric("Prediction", result.predicted_class.title())
+        st.metric("Confidence", percent(result.confidence))
+        st.metric("Confidence level", result.confidence_level)
+
+        if result.quality_warnings:
+            for warning in result.quality_warnings:
+                st.warning(warning)
+
+        if result.uncertainty:
+            st.warning(result.uncertainty)
+            st.info(
+                "This model is designed to classify one dominant waste category. "
+                "Images containing multiple waste objects may produce uncertain results."
+            )
+        elif result.confidence_level == "High":
+            st.success("High-confidence prediction.")
+        else:
+            st.warning("Medium-confidence prediction. Review the top alternatives before disposal.")
+
+        st.subheader("Top Predictions")
+        render_probability_bars(result.top_3_predictions)
+
+        st.subheader("Recommendation")
+        st.info(result.recommendation)
+
+        record_prediction(
+            filename=uploaded.name,
+            predicted_class=result.predicted_class,
+            confidence=result.confidence,
+            confidence_level=result.confidence_level,
+            uncertainty=result.uncertainty,
+            top_3_predictions=result.top_3_predictions,
         )
 
-    interpreter = Interpreter(
-        model_path=str(MODEL_PATH)
-    )
 
-    interpreter.allocate_tensors()
+def analytics_page() -> None:
+    st.title("Analytics")
+    history = load_history()
+    if history.empty:
+        st.info("No predictions yet.")
+        return
 
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
+    history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
+    st.subheader("Predictions by Category")
+    st.bar_chart(history["predicted_class"].value_counts())
 
-    return interpreter, input_details, output_details
+    st.subheader("Average Confidence by Category")
+    st.bar_chart(history.groupby("predicted_class")["confidence"].mean())
 
+    st.subheader("Confidence Level Distribution")
+    st.bar_chart(history["confidence_level"].value_counts())
 
-# ============================================================
-# IMAGE PREPROCESSING
-# ============================================================
-
-def preprocess_image(image):
-    image = image.convert("RGB")
-    image = image.resize(IMG_SIZE)
-
-    image_array = np.asarray(
-        image,
-        dtype=np.float32
-    )
-
-    # MobileNetV2 preprocessing:
-    # RGB [0,255] -> [-1,1]
-    image_array = (image_array / 127.5) - 1.0
-
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
-
-    return image_array
+    st.subheader("Recent Prediction Trend")
+    trend = history.dropna(subset=["timestamp"]).set_index("timestamp").resample("D").size()
+    st.line_chart(trend)
 
 
-# ============================================================
-# PREDICTION
-# ============================================================
+def model_performance_page() -> None:
+    st.title("Model Performance")
+    validation_report = read_json_report(REPORTS_DIR / "classification_report.json")
+    real_report = read_json_report(REPORTS_DIR / "real_world_classification_report.json")
 
-def predict(image):
-    interpreter, input_details, output_details = load_model()
+    if validation_report is None:
+        st.info("Validation evaluation has not been performed yet.")
+    else:
+        cols = st.columns(4)
+        cols[0].metric("Validation accuracy", percent(validation_report.get("accuracy", 0.0)))
+        cols[1].metric("Macro precision", percent(validation_report["macro avg"]["precision"]))
+        cols[2].metric("Macro recall", percent(validation_report["macro avg"]["recall"]))
+        cols[3].metric("Macro F1", percent(validation_report["macro avg"]["f1-score"]))
 
-    input_data = preprocess_image(image)
-
-    input_index = input_details[0]["index"]
-    output_index = output_details[0]["index"]
-
-    interpreter.set_tensor(
-        input_index,
-        input_data
-    )
-
-    interpreter.invoke()
-
-    predictions = interpreter.get_tensor(
-        output_index
-    )
-
-    predictions = np.asarray(
-        predictions[0],
-        dtype=np.float32
-    )
-
-    # Some TFLite models may return logits.
-    # Convert to probabilities if required.
-    if (
-        np.any(predictions < 0)
-        or not np.isclose(
-            np.sum(predictions),
-            1.0,
-            atol=0.05
+        per_class = pd.DataFrame(
+            [
+                {
+                    "class": name,
+                    "precision": validation_report[name]["precision"],
+                    "recall": validation_report[name]["recall"],
+                    "f1": validation_report[name]["f1-score"],
+                    "support": validation_report[name]["support"],
+                }
+                for name in CLASS_NAMES
+                if name in validation_report
+            ]
         )
-    ):
-        exp_predictions = np.exp(
-            predictions - np.max(predictions)
-        )
-        predictions = (
-            exp_predictions /
-            np.sum(exp_predictions)
-        )
+        st.subheader("Per-Class Validation Performance")
+        st.dataframe(per_class, use_container_width=True, hide_index=True)
 
-    return predictions
+    matrix_path = REPORTS_DIR / "confusion_matrix.csv"
+    if matrix_path.exists():
+        st.subheader("Validation Confusion Matrix")
+        st.dataframe(pd.read_csv(matrix_path, index_col=0), use_container_width=True)
+
+    st.subheader("Real-World Performance")
+    if real_report is None:
+        st.info("Real-world evaluation has not been performed yet.")
+    else:
+        cols = st.columns(4)
+        report = real_report["report"]
+        cols[0].metric("Real-world accuracy", percent(real_report.get("accuracy", 0.0)))
+        cols[1].metric("Macro precision", percent(report["macro avg"]["precision"]))
+        cols[2].metric("Macro recall", percent(report["macro avg"]["recall"]))
+        cols[3].metric("Macro F1", percent(report["macro avg"]["f1-score"]))
+        predictions_path = REPORTS_DIR / "real_world_predictions.csv"
+        if predictions_path.exists():
+            st.dataframe(pd.read_csv(predictions_path), use_container_width=True, hide_index=True)
 
 
-# ============================================================
-# SIDEBAR
-# ============================================================
+def history_page() -> None:
+    st.title("Prediction History")
+    history = load_history()
+    if history.empty:
+        st.info("No predictions yet.")
+        return
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("Clear history"):
+            clear_history()
+            st.rerun()
+    with col2:
+        csv = history.to_csv(index=False).encode("utf-8")
+        st.download_button("Export CSV", csv, "prediction_history.csv", "text/csv")
+
+    st.dataframe(history, use_container_width=True, hide_index=True)
+
+
+def waste_guide_page() -> None:
+    st.title("Waste Guide")
+    st.caption("General guidance only. Recycling rules vary by location.")
+    for class_name in CLASS_NAMES:
+        guide = WASTE_GUIDE[class_name]
+        with st.expander(class_name.title(), expanded=False):
+            st.write("Examples: " + ", ".join(guide["examples"]))
+            st.write("Recycling: " + guide["recycling"])
+            st.write("Contamination: " + guide["contamination"])
+            st.write("Disposal: " + guide["disposal"])
+
+
+def about_page() -> None:
+    st.title("About")
+    st.write(
+        "This V3 system uses a MobileNetV2 TensorFlow Lite classifier for six single-label "
+        "waste categories: cardboard, glass, metal, paper, plastic, and trash."
+    )
+    st.write(
+        "The classifier predicts one dominant category. It is not an object detector and does "
+        "not locate multiple items in an image. YOLO-style object detection would be a suitable "
+        "future direction for mixed-waste scenes."
+    )
+    st.write(f"Deployment model: `{TFLITE_MODEL_PATH}`")
+
+
+PAGES = {
+    "Dashboard": dashboard_page,
+    "Classify Waste": classify_page,
+    "Analytics": analytics_page,
+    "Model Performance": model_performance_page,
+    "Prediction History": history_page,
+    "Waste Guide": waste_guide_page,
+    "About": about_page,
+}
 
 with st.sidebar:
-
-    st.header("♻️ About")
-
-    st.write(
-        """
-        This application uses a trained MobileNetV2
-        deep-learning model to classify waste images
-        into six categories.
-        """
-    )
-
-    st.subheader("Supported Categories")
-
-    classes = load_classes()
-
-    for class_name in classes:
-        st.write(f"• {class_name.title()}")
-
+    st.header("Navigation")
+    page_name = st.radio("Page", list(PAGES.keys()), label_visibility="collapsed")
     st.divider()
+    st.caption("Model classes")
+    st.write(", ".join(name.title() for name in CLASS_NAMES))
 
-    st.subheader("Model")
-
-    st.write("MobileNetV2")
-    st.write("Input: 224 × 224 RGB")
-    st.write("Output: 6 classes")
-
-
-# ============================================================
-# MAIN TITLE
-# ============================================================
-
-st.markdown(
-    '<div class="main-title">♻️ AI Waste Classification</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="subtitle">'
-    'Upload a waste image and let the AI classify it'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-
-# ============================================================
-# FILE UPLOAD
-# ============================================================
-
-uploaded_file = st.file_uploader(
-    "📷 Upload a waste image",
-    type=[
-        "jpg",
-        "jpeg",
-        "png",
-        "webp"
-    ]
-)
-
-
-# ============================================================
-# MAIN APPLICATION
-# ============================================================
-
-if uploaded_file is None:
-
-    st.info(
-        "Upload an image to start waste classification."
-    )
-
-    st.markdown(
-        """
-        ### How it works
-
-        1. Upload a waste image.
-        2. The image is resized to 224 × 224.
-        3. MobileNetV2 analyzes the image.
-        4. The application displays the predicted category.
-        5. All six prediction probabilities are shown.
-        """
-    )
-
-else:
-
-    image = Image.open(uploaded_file)
-
-    col1, col2 = st.columns(
-        [1, 1],
-        gap="large"
-    )
-
-    # --------------------------------------------------------
-    # IMAGE
-    # --------------------------------------------------------
-
-    with col1:
-
-        st.subheader("Uploaded Image")
-
-        st.image(
-            image,
-            use_container_width=True
-        )
-
-        st.caption(
-            f"File: {uploaded_file.name}"
-        )
-
-    # --------------------------------------------------------
-    # ANALYSIS
-    # --------------------------------------------------------
-
-    with col2:
-
-        st.subheader("AI Analysis")
-
-        with st.spinner("Analyzing image..."):
-
-            try:
-
-                predictions = predict(image)
-
-                classes = load_classes()
-
-                if len(predictions) != len(classes):
-                    st.error(
-                        "Model output does not match "
-                        "the number of classes."
-                    )
-                    st.stop()
-
-                sorted_indices = np.argsort(
-                    predictions
-                )[::-1]
-
-                top_index = sorted_indices[0]
-
-                predicted_class = classes[
-                    top_index
-                ]
-
-                confidence = float(
-                    predictions[top_index] * 100
-                )
-
-                second_confidence = float(
-                    predictions[
-                        sorted_indices[1]
-                    ] * 100
-                )
-
-                # ------------------------------------------------
-                # MAIN RESULT
-                # ------------------------------------------------
-
-                st.markdown(
-                    '<div class="result-box">',
-                    unsafe_allow_html=True
-                )
-
-                st.markdown(
-                    f'<div class="prediction">'
-                    f'{predicted_class.title()}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-                st.markdown(
-                    f'<div class="confidence">'
-                    f'Confidence: {confidence:.2f}%'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-
-                st.markdown(
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-
-                # ------------------------------------------------
-                # CONFIDENCE INTERPRETATION
-                # ------------------------------------------------
-
-                if confidence >= 80:
-
-                    st.success(
-                        "High-confidence prediction."
-                    )
-
-                elif confidence >= 60:
-
-                    st.warning(
-                        "Moderate-confidence prediction. "
-                        "The image may contain visual "
-                        "features shared with other waste types."
-                    )
-
-                else:
-
-                    st.warning(
-                        "Low-confidence prediction. "
-                        "The model is uncertain. "
-                        "Try a clearer image containing "
-                        "one dominant waste item."
-                    )
-
-                # ------------------------------------------------
-                # ALL PREDICTIONS
-                # ------------------------------------------------
-
-                st.subheader(
-                    "Prediction Probabilities"
-                )
-
-                for index in sorted_indices:
-
-                    class_name = classes[index]
-
-                    probability = float(
-                        predictions[index] * 100
-                    )
-
-                    st.write(
-                        f"**{class_name.title()}** "
-                        f"{probability:.2f}%"
-                    )
-
-                    st.progress(
-                        min(
-                            probability / 100,
-                            1.0
-                        )
-                    )
-
-                # ------------------------------------------------
-                # TOP TWO
-                # ------------------------------------------------
-
-                st.subheader(
-                    "Prediction Analysis"
-                )
-
-                st.write(
-                    f"**Top prediction:** "
-                    f"{predicted_class.title()} "
-                    f"({confidence:.2f}%)"
-                )
-
-                st.write(
-                    f"**Second prediction:** "
-                    f"{classes[sorted_indices[1]].title()} "
-                    f"({second_confidence:.2f}%)"
-                )
-
-                difference = (
-                    confidence -
-                    second_confidence
-                )
-
-                st.write(
-                    f"**Difference:** "
-                    f"{difference:.2f} percentage points"
-                )
-
-                if difference < 10:
-
-                    st.warning(
-                        "The top two classes are close. "
-                        "The prediction should be treated "
-                        "as uncertain."
-                    )
-
-                # ------------------------------------------------
-                # RECOMMENDATION
-                # ------------------------------------------------
-
-                st.subheader(
-                    "♻️ Recommendation"
-                )
-
-                recommendations = {
-                    "cardboard":
-                        "Place cardboard in the paper/cardboard recycling stream.",
-
-                    "glass":
-                        "Place clean glass in the appropriate glass recycling stream.",
-
-                    "metal":
-                        "Place metal containers in the metal recycling stream.",
-
-                    "paper":
-                        "Place clean and dry paper in paper recycling.",
-
-                    "plastic":
-                        "Check the local recycling rules before placing plastic in recycling.",
-
-                    "trash":
-                        "Dispose of non-recyclable or contaminated waste in the general waste stream."
-                }
-
-                st.info(
-                    recommendations.get(
-                        predicted_class,
-                        "Follow local waste-management guidelines."
-                    )
-                )
-
-            except Exception as error:
-
-                st.error(
-                    "Unable to analyze the image."
-                )
-
-                st.exception(error)
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
-
-st.caption(
-    "AI Waste Classification System • "
-    "MobileNetV2 • TensorFlow Lite"
-)
+PAGES[page_name]()
