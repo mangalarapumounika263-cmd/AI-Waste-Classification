@@ -77,6 +77,11 @@ class CandidateModel:
             import tensorflow as tf
             self.model = tf.keras.models.load_model(self.path)
 
+    @property
+    def parameter_count(self):
+        """Keras exposes this directly; TFLite flatbuffers do not reliably do so."""
+        return int(self.model.count_params()) if self.kind != ".tflite" else None
+
     def predict(self, image_path: Path) -> np.ndarray:
         array = preprocess_raw(image_path)
         if self.kind == ".tflite":
@@ -122,6 +127,8 @@ def evaluate_candidate(path: Path, dataset_name: str, images: list[tuple[Path, s
         "trash_recall": report["trash"]["recall"],
         "metal_recall": report["metal"]["recall"],
         "average_confidence": float(np.mean(confidences)) if confidences else 0.0,
+        "parameter_count": candidate.parameter_count,
+        "model_size_bytes": path.stat().st_size,
     }
 
 

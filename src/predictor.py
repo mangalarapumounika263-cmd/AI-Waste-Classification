@@ -24,7 +24,7 @@ from .config import (
     TFLITE_MODEL_PATH,
     UNCERTAIN_MARGIN_THRESHOLD,
 )
-from .preprocessing import check_image_quality, preprocess_for_mobilenet_v2
+from .preprocessing import ImageQuality, check_image_quality, preprocess_for_mobilenet_v2
 from .recommendations import get_recommendation
 
 
@@ -38,6 +38,25 @@ class PredictionResult:
     uncertainty: Optional[str]
     recommendation: str
     quality_warnings: List[str]
+    image_quality: ImageQuality
+
+    def as_dict(self) -> dict:
+        """Stable UI/API representation without duplicating inference logic."""
+        return {
+            "predicted_class": self.predicted_class,
+            "confidence": self.confidence,
+            "confidence_level": self.confidence_level,
+            "top_predictions": self.top_3_predictions,
+            "uncertain": bool(self.uncertainty),
+            "uncertainty": self.uncertainty,
+            "image_quality": {
+                "brightness": self.image_quality.brightness_status,
+                "sharpness": self.image_quality.sharpness_status,
+                "suitability": self.image_quality.suitability,
+                "warnings": self.quality_warnings,
+            },
+            "recommendation": self.recommendation,
+        }
 
 
 def load_class_names(path: Path = CLASS_NAMES_PATH) -> List[str]:
@@ -158,4 +177,5 @@ class WastePredictor:
             uncertainty=uncertainty,
             recommendation=get_recommendation(predicted_class),
             quality_warnings=quality.warnings,
+            image_quality=quality,
         )
